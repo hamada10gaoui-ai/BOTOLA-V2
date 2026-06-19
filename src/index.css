@@ -1,0 +1,83 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Tajawal:wght@400;500;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Tajawal", "Inter", sans-serif;
+  --font-display: "Cairo", sans-serif;
+
+  /* CHAMPIONSHIP ROYAL FOREST & GOLD (Luxury Sports Arena Theme) */
+  --color-slate-950: #0f172a; /* Deep Slate-950 - natural, highly comfortable dark screen background */
+  --color-slate-900: #1e293b; /* Slate-900 - soft premium container background */
+  --color-slate-800: #334155; /* Soft modern border */
+  --color-slate-750: #3e4e68; /* Dynamic interface lines */
+  --color-slate-700: #475569; /* Soft tactical buttons */
+  --color-slate-650: #64748b; /* Cool grey highlights */
+  --color-slate-600: #94a3b8; /* Muted typography secondary labels */
+  --color-slate-500: #cbd5e1; /* Neutral muted text */
+  --color-slate-400: #cbd5e1; /* Clear high readability content */
+  --color-slate-300: #e2e8f0; /* Elegant light content highlights */
+  --color-slate-200: #f1f5f9; /* Soft white background overlays */
+  --color-slate-100: #f8fafc; /* Pure bright tactical headers */
+  --color-slate-50:  #ffffff;
+
+  /* HIGH LEGIBILITY SPORT ACCENTS (Championship Gold, Energetic Royal Pitch Green, Sky Blue) */
+  --color-emerald-500: #10b981; /* Premium Athletic pitch green - balanced, organic and professional emerald */
+  --color-emerald-400: #34d399; /* Soft pastel grass green */
+  --color-emerald-300: #6ee7b7;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-600: #059669; /* Rich game pitch dark organic green */
+  --color-emerald-700: #047857;
+
+  --color-indigo-500: #2563eb; /* Comfortable Royal Blue - standard athletic indicator */
+  --color-indigo-400: #60a5fa; /* Soft sky blue */
+  --color-indigo-600: #1d4ed8;
+
+  --color-amber-500: #f59e0b; /* Golden Championship Yellow - warm, natural gold */
+  --color-amber-400: #fbbf24; /* Pastel warm yellow */
+  --color-amber-600: #d97706;
+
+  --color-rose-500: #ef4444; /* Standard sports referee red card */
+  --color-rose-400: #f87171;
+}
+
+body {
+  font-family: var(--font-sans);
+  direction: rtl;
+  text-align: right;
+  background-color: var(--color-slate-950);
+  color: var(--color-slate-200);
+  overflow-x: hidden;
+}
+
+/* Custom styles for sporty look */
+.sport-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+}
+
+.card-hover {
+  transition: all 0.2s ease-in-out;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
+}
+
+/* Blinking dot for live indicator */
+@keyframes pulse-ring {
+  0% { transform: scale(.33); }
+  80%, 100% { opacity: 0; }
+}
+@keyframes pulse-dot {
+  0% { transform: scale(.8); }
+  50% { transform: scale(1); }
+  100% { transform: scale(.8); }
+}
+
+.live-dot-ring {
+  animation: pulse-ring 1.25s cubic-bezier(0.215, 0.610, 0.355, 1) infinite;
+}
+.live-dot {
+  animation: pulse-dot 1.25s cubic-bezier(0.455, 0.03, 0.515, 0.955) -0.4s infinite;
+}
+
