@@ -1,3 +1,15 @@
+/**
+ * ======================================================================================
+ * SYSTEME DE REPLICATION ET DE SYNCHRONISATION CLOUD DE LA BASE DE DONNEES RELATIONNELLE MySQL
+ * SGBD Principal : MySQL / MariaDB (football_tournament_db)
+ * ======================================================================================
+ * 
+ * Ce module sert de passerelle (bridge) de synchronisation sémantique temps-réel.
+ * Il assure la réplication des tables relationnelles MySQL de l'application cliente 
+ * vers des nœuds de stockage cloud à haute disponibilité pour la diffusion des scores 
+ * en direct aux supporters via les QR Codes.
+ */
+
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 

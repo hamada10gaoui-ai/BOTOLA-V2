@@ -26,7 +26,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- 1. Table : USERS (Utilisateurs & Administrateurs)
 -- =============================================================================
 CREATE TABLE users (
-    id VARCHAR(100) PRIMARY KEY,                         -- Identifiant unique de l'utilisateur (ex: Firebase UID ou UUID)
+    id VARCHAR(100) PRIMARY KEY,                         -- Identifiant unique de l'utilisateur (ex: ID unique ou UUID)
     name VARCHAR(100) NOT NULL,                          -- Nom complet de l'utilisateur
     email VARCHAR(150) UNIQUE NOT NULL,                  -- Adresse e-mail
     role ENUM('organizer', 'spectator') NOT NULL DEFAULT 'spectator', -- Rôle de l'utilisateur

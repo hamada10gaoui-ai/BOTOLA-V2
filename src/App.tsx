@@ -7254,7 +7254,7 @@ export default function App() {
               <div className="relative flex py-1 items-center">
                 <div className="flex-grow border-t border-slate-800/80"></div>
                 <span className="flex-shrink mx-4 text-slate-550 text-slate-500 text-[10px] font-black tracking-widest">
-                  {language === 'ar' ? 'أو عبر سحابة جوجل فيربيس' : 'OR CLOUD POWERED'}
+                  {language === 'ar' ? 'أو عبر سحابة مزامنة MySQL' : 'OR REMOTE MYSQL CLOUD'}
                 </span>
                 <div className="flex-grow border-t border-slate-800/80"></div>
               </div>

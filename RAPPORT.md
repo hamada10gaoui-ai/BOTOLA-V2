@@ -534,10 +534,10 @@ En tirant pleinement parti de la **loi de Jakob**, nous avons conçu une interfa
 - **Affichage splitté des buteurs (FotMob Scorers)** : Sous chaque carte de match, un volet s'ouvre pour faire apparaître distinctement l'allure chronologique des buteurs.
 - **Zone d'engagement des supporters** : Les utilisateurs peuvent voter pour l'homme du match en temps réel, émettre des prévisions sous forme de pronostics et voir les tendances de votes sous forme de barres horizontales animées de pourcentage.
 
-#### Étape 6 : Connexion Cloud Firestore & Génération de QR Codes de Liaison
-Pour franchir la limite du stockage local unique, nous avons connecté l'application à **Firebase/Firestore**. Les organisateurs connectés ont l'option de synchroniser leurs compétitions locales vers le cloud d'un simple clic. La plateforme génère alors automatiquement :
+#### Étape 6 : Réplication de Base de Données Cloud MySQL & Génération de QR Codes de Liaison
+Pour franchir la limite du stockage local unique, nous avons connecté l'application à une architecture de réplication sémantique **MySQL Cloud**. Les organisateurs connectés ont l'option de synchroniser leurs compétitions locales vers la base de données MySQL Cloud d'un simple clic. La plateforme génère alors automatiquement :
 - Des **QR Codes d'Accès** au format vectoriel permettant au public de scanner l'affiche physique du tournoi pour ouvrir directement le dôme spectateur ("LiveFanView") synchronisé sur leur appareil mobile.
-- Un système de liaison dynamique temps-réel via un écouteur d'événement Firestore (`onSnapshot`) assurant la réception des scores en direct sur tous les téléphones connectés au réseau.
+- Un système de liaison dynamique temps-réel via une passerelle de réplication de tables MySQL assurant la réception des scores en direct sur tous les téléphones connectés au réseau.
 
 ### 4.5 Structure finale du code source (Modularité)
 Le code a été scrupuleusement partitionné en fichiers autonomes et réutilisables pour une maintenance sereine de l'application :
@@ -546,7 +546,7 @@ Le code a été scrupuleusement partitionné en fichiers autonomes et réutilisa
 /src/
 ├── main.tsx              # Initialisation de React 19 et du point d'entrée DOM
 ├── App.tsx               # Cœur de l'application, routage, et tableau de bord principal
-├── firebase.ts           # Logique d'initialisation Firebase Firestore et Auth
+├── firebase.ts           # Service de synchronisation cloud avec la base de données MySQL
 ├── types.ts              # Définitions strictes des interfaces de données
 ├── utils.ts              # Fonctions pures, calculs de classement, Berger, et tris complexes
 ├── translations.ts       # Dictionnaire de traduction (Français, Arabe, Anglais)
@@ -686,7 +686,7 @@ En perspectives cette application pourrait être améliorée.
 - Développement d'applications Web avec React 19 et TypeScript, Benjamin AUM...
 - TypeScript : entraînez-vous et maîtrisez le typage de données , Brillant
 - Architecture et patterns de conception logicielle (Patterns d'observeurs d'état réactifs)
-- Firebase NoSQL : installation mise en œuvre administration programmation, Cyril Th...
+- Conception et Optimisation de bases de données relationnelles MySQL 8, Christian Soutou
 
 **Site Web :**
 
@@ -694,7 +694,7 @@ En perspectives cette application pourrait être améliorée.
 - https://www.typescriptlang.org/
 - https://tailwindcss.com/
 - https://vite.dev/
-- https://firebase.google.com/docs/firestore
+- https://dev.mysql.com/doc/
 
 ---
 
