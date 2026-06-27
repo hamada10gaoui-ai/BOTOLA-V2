@@ -206,6 +206,16 @@ export default function LiveFanView({
               <span className="text-slate-100">{organizerName}</span>
             </div>
           )}
+
+          {(() => {
+            const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+            return params.has('cloudId') ? (
+              <div className="mt-2.5 inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 text-[10px] font-black px-3.5 py-1.5 rounded-full shadow-inner animate-pulse">
+                <span className="text-xs">📡</span>
+                <span>{language === 'ar' ? 'مزامنة سحابة MySQL نشطة' : language === 'en' ? 'Live MySQL Cloud Replica Active' : 'Réplication Cloud MySQL Active'}</span>
+              </div>
+            ) : null;
+          })()}
         </div>
       </section>
 

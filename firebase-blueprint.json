@@ -1,0 +1,48 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Public and private user profiles and configuration",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Authenticating user identifier" },
+        "name": { "type": "string", "description": "Display name of the user" },
+        "email": { "type": "string", "description": "Verified Google email" },
+        "role": { "type": "string", "enum": ["organizer", "spectator"], "description": "System role" },
+        "favoriteTeamId": { "type": "string", "description": "ID of their preferred team" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["uid", "name", "email", "role"]
+    },
+    "Tournament": {
+      "title": "Tournament Data",
+      "description": "Full details of a school or proximity football tournament",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "name": { "type": "string", "description": "Tournament name" },
+        "organizerName": { "type": "string", "description": "Name of tournament organizer" },
+        "ownerId": { "type": "string", "description": "Authorized manager UID from Auth" },
+        "drawType": { "type": "string", "enum": ["league", "knockout", "groups"], "description": "Competition system format" },
+        "teams": { "type": "array", "description": "Array of registered Team entities" },
+        "players": { "type": "array", "description": "Array of registered Player entities" },
+        "referees": { "type": "array", "description": "Array of registered Referee entities" },
+        "matches": { "type": "array", "description": "Array of scheduled Match entities with actions" },
+        "participatingTeamIds": { "type": "array", "description": "Array of participating team identifier strings" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of creation" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Timestamp of last sync" }
+      },
+      "required": ["id", "name", "organizerName", "ownerId", "drawType", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User account collection"
+    },
+    "/tournaments/{tournamentId}": {
+      "schema": "Tournament",
+      "description": "Active managed or publicly shared tournaments"
+    }
+  }
+}

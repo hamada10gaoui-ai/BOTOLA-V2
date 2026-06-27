@@ -21,6 +21,7 @@ export interface TranslationDict {
   tabReferees: string;
   tabMatches: string;
   tabDraw: string;
+  tabMySQL: string;
   
   viewerModeTitle: string;
   viewerModeDesc: string;
@@ -238,6 +239,7 @@ export const translations: Record<Language, TranslationDict> = {
     tabReferees: 'الحكام',
     tabMatches: 'المباريات',
     tabDraw: 'سحب القرعة السحرية ✨',
+    tabMySQL: 'قاعدة بيانات MySQL 🗄️',
     
     viewerModeTitle: 'وضع الزائر والمشاهد المباشر (للقراءة فقط)',
     viewerModeDesc: 'أنت الآن في وضع متابعة النتائج والترتيب وإحصائيات الهدافين العامة حياً دون تعديل. إذا لم تكن زائرًا وكان لك صلاحيات تعديل وجدولة البطولة، فيرجى تفعيل وضع المنظم.',
@@ -444,6 +446,7 @@ export const translations: Record<Language, TranslationDict> = {
     tabReferees: 'Referees',
     tabMatches: 'Matches',
     tabDraw: 'Magic Draw Magic 🔮',
+    tabMySQL: 'MySQL Database 🗄️',
     
     viewerModeTitle: 'Spectator View (Read-Only Mode)',
     viewerModeDesc: 'You are currently observing the results, standings and top scorer tables live in read-only mode. If you are authorized to edit and schedule the tournament, please activate Organizer mode.',
@@ -650,6 +653,7 @@ export const translations: Record<Language, TranslationDict> = {
     tabReferees: 'Arbitres',
     tabMatches: 'Matchs',
     tabDraw: 'Tirage Magique 🔮',
+    tabMySQL: 'Base de données MySQL 🗄️',
     
     viewerModeTitle: 'Mode Spectateur (Aperçu en lecture seule)',
     viewerModeDesc: 'Vous observez actuellement les scores, classements et statistiques en direct. Si vous préparez la ligue et possédez les droits, veuillez passer en mode Organisateur.',

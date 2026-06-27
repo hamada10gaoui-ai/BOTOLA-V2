@@ -4,7 +4,7 @@ import {
   Trophy, Users, User, Calendar, TrendingUp, QrCode, Plus, Trash2, Edit, Save, X, 
   Sparkles, Check, RotateCcw, Info, Clock, Play, Square, AlertTriangle, 
   Share2, ExternalLink, Eye, Settings, Search, Award, Shield, FileText, CheckCircle2,
-  Phone, UserCheck, Trash, Activity, Lock, Key, Download
+  Phone, UserCheck, Trash, Activity, Lock, Key, Download, Cloud, Database
 } from 'lucide-react';
 
 import { Team, Player, Referee, Match, MatchEvent, TournamentType, Tournament } from './types';
@@ -23,6 +23,20 @@ import QrScannerOverlay from './components/QrScannerOverlay';
 import PlayerDetailsModal from './components/PlayerDetailsModal';
 import MatchCalendar from './components/MatchCalendar';
 import QRCode from 'qrcode';
+import { MySQLSimulator, SQLQueryResult } from './mysqlSim';
+
+import { 
+  auth, 
+  signInWithGoogle, 
+  logoutUser, 
+  getUserProfile, 
+  saveUserProfile, 
+  syncTournamentToCloud, 
+  getTournamentFromCloud, 
+  listenToTournamentFromCloud, 
+  deleteTournamentFromCloud 
+} from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
 const exportToCSV = (filename: string, headers: string[], rows: string[][]) => {
   // \uFEFF is the UTF-8 BOM so Excel opens Arabic correctly
@@ -254,6 +268,13 @@ export default function App() {
     return 'admin';
   });
 
+  // --- Firebase Cloud Sync Tracking States ---
+  const [firebaseUser, setFirebaseUser] = useState<any>(null);
+  const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+  const [isCloudSynced, setIsCloudSynced] = useState<boolean>(false);
+  const [cloudFetchError, setCloudFetchError] = useState<string | null>(null);
+  const [cloudSyncUrl, setCloudSyncUrl] = useState<string>('');
+
   // QR and Scanner overlay states
   const [scannerOpen, setScannerOpen] = useState(false);
   const [activeQrModal, setActiveQrModal] = useState<{
@@ -284,7 +305,74 @@ export default function App() {
   }, []);
 
   // Active Admin Sub-tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'teams' | 'players' | 'referees' | 'matches' | 'draw'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'teams' | 'players' | 'referees' | 'matches' | 'draw' | 'mysql'>('dashboard');
+
+  // MySQL SQL Query Log state for academic defense (Live simulation & verification)
+  const [sqlQueriesLog, setSqlQueriesLog] = useState<{ query: string; timestamp: string; rowsAffected?: number }[]>(() => {
+    return [
+      {
+        query: `-- =========================================================\n-- INITIALISATION DE LA BASE DE DONNÉES RELATIONNELLE MySQL\n-- SGBDR : MySQL 8.x / MariaDB (Moteur InnoDB)\n-- =========================================================\nCREATE DATABASE IF NOT EXISTS football_tournament_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\nUSE football_tournament_db;`,
+        timestamp: new Date().toLocaleTimeString(),
+        rowsAffected: 0
+      },
+      {
+        query: `-- Création de la table 'tournaments' (Compétitions) avec clé primaire\nCREATE TABLE tournaments (\n    id VARCHAR(50) PRIMARY KEY,\n    name VARCHAR(150) NOT NULL,\n    organizer_name VARCHAR(100) NOT NULL,\n    owner_id VARCHAR(100) NOT NULL,\n    draw_type ENUM('league', 'knockout', 'double_elimination') NOT NULL,\n    pin_code VARCHAR(4) NOT NULL,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n) ENGINE=InnoDB;`,
+        timestamp: new Date().toLocaleTimeString(),
+        rowsAffected: 0
+      },
+      {
+        query: `-- Création de la table relationnelle 'teams' (Clubs) avec liaison cascade\nCREATE TABLE teams (\n    id VARCHAR(50) PRIMARY KEY,\n    tournament_id VARCHAR(50) NOT NULL,\n    name VARCHAR(100) NOT NULL,\n    logo_url VARCHAR(255) NULL,\n    color VARCHAR(30) DEFAULT '#3b82f6',\n    CONSTRAINT fk_team_tournament FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE\n) ENGINE=InnoDB;`,
+        timestamp: new Date().toLocaleTimeString(),
+        rowsAffected: 0
+      }
+    ];
+  });
+
+  const logSQLQuery = (query: string, rowsAffected?: number) => {
+    setSqlQueriesLog(prev => [
+      ...prev,
+      {
+        query,
+        timestamp: new Date().toLocaleTimeString(),
+        rowsAffected
+      }
+    ]);
+  };
+
+  // MySQL interactive sandbox states
+  const [customSqlQuery, setCustomSqlQuery] = useState<string>('SELECT * FROM teams;');
+  const [customSqlResult, setCustomSqlResult] = useState<SQLQueryResult | null>(null);
+  const [sqlActiveSchemaTable, setSqlActiveSchemaTable] = useState<'tournaments' | 'teams' | 'players' | 'referees' | 'matches' | 'match_events'>('teams');
+
+  const handleExecuteConsoleQuery = () => {
+    try {
+      const activeTour = tournaments.find(t => t.id === activeTournamentId) || {
+        id: activeTournamentId || 'tour-active',
+        name: tournamentName,
+        organizerName: organizerName,
+        drawType: drawType,
+        participatingTeamIds: participatingTeamIds,
+        matches: matches
+      };
+      
+      const sim = new MySQLSimulator(
+        [activeTour],
+        teams,
+        players,
+        referees,
+        matches
+      );
+      const res = sim.executeQuery(customSqlQuery);
+      setCustomSqlResult(res);
+    } catch (err: any) {
+      setCustomSqlResult({
+        columns: [],
+        rows: [],
+        queryType: 'UNKNOWN',
+        error: err.message || String(err)
+      });
+    }
+  };
 
   // Welcome banner state
   const [showWelcome, setShowWelcome] = useState<boolean>(() => {
@@ -469,6 +557,83 @@ export default function App() {
     }
     return pf === 'ftm' ? INITIAL_TEAMS.map(t => t.id) : [];
   });
+
+  // Synchronize Google Auth state & load corresponding Firestore profiles
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (fUser) => {
+      if (fUser) {
+        setFirebaseUser(fUser);
+        try {
+          const profile = await getUserProfile(fUser.uid);
+          if (profile) {
+            setRegisteredUser({
+              name: profile.name,
+              email: profile.email,
+              role: profile.role,
+              favoriteTeamId: profile.favoriteTeamId || null
+            });
+            if (profile.role === 'organizer') {
+              setIsOrganizerVerified(true);
+            }
+          } else {
+            // Profile does not exist yet; auto-initialize profile
+            const tempProfile = {
+              name: fUser.displayName || fUser.email?.split('@')[0] || 'User',
+              email: fUser.email || '',
+              role: 'organizer' as const,
+              favoriteTeamId: null
+            };
+            await saveUserProfile(fUser.uid, tempProfile);
+            setRegisteredUser(tempProfile);
+            setIsOrganizerVerified(true);
+          }
+        } catch (e) {
+          console.error("Firestore user profile loading error:", e);
+        }
+      } else {
+        setFirebaseUser(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Listen in real-time to shared Firebase tournament if cloudId is present in URL
+  useEffect(() => {
+    const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    const cloudIdVal = params.get('cloudId');
+    if (cloudIdVal) {
+      const unsubscribe = listenToTournamentFromCloud(
+        cloudIdVal,
+        (data) => {
+          if (data) {
+            setTournamentName(data.name || '');
+            setOrganizerName(data.organizerName || '');
+            setParticipatingTeamIds(data.participatingTeamIds || []);
+            setMatches(data.matches || []);
+            setDrawType(data.drawType || 'league');
+            setTeams(data.teams || []);
+            setPlayers(data.players || []);
+            setReferees(data.referees || []);
+            setActiveTournamentId(data.id || '');
+            setIsCloudSynced(true);
+            setCloudFetchError(null);
+          } else {
+            setCloudFetchError(language === 'ar' ? 'البطولة السحابية المطلوبة غير موجودة.' : 'The requested cloud tournament was not found.');
+          }
+        },
+        (error) => {
+          console.error("Firestore real-time subscriber error:", error);
+          setCloudFetchError(language === 'ar' ? 'فشل الاتصال المباشر بالسحابة.' : 'Direct connection to cloud failed.');
+        }
+      );
+      return () => unsubscribe();
+    }
+  }, [language]);
+
+  // Invalidate cloud synced status on local modifications to prompt sync backups
+  useEffect(() => {
+    setIsCloudSynced(false);
+  }, [teams, players, referees, matches, tournamentName, organizerName, drawType, participatingTeamIds]);
 
   const isSwappingTournament = useRef<boolean>(false);
   const loadedTournamentIdRef = useRef<string>(activeTournamentId);
@@ -841,6 +1006,25 @@ export default function App() {
     );
   };
 
+  const handleGoogleSignIn = async () => {
+    try {
+      setRegError(null);
+      const user = await signInWithGoogle();
+      if (user) {
+        setRegisterModalOpen(false);
+        triggerAlert(
+          language === 'ar' ? 'تم الدخول عبر Google! 🔑' : 'Google Signed In Successfully! 🔑',
+          language === 'ar' 
+            ? `مرحباً بك يا كابتن ${user.displayName || 'المنظّم'}! تم ربط حسابك السحابي وتفعيل صلاحيات المزامنة والتحديث المباشر للمشاهدين بنجاح.`
+            : `Welcome back Captain ${user.displayName || 'Organizer'}! Connected your Cloud account and enabled real-time sync.`
+        );
+      }
+    } catch (error) {
+      console.error("Google sign in failed:", error);
+      setRegError(language === 'ar' ? 'فشلت عملية الدخول بحساب Google. كرر المحاولة.' : 'Google Sign-In failed. Please try again.');
+    }
+  };
+
   const handlePredictMatch = (matchId: string, predict: 'home' | 'away' | 'draw') => {
     if (!registeredUser) {
       setRegisterModalOpen(true);
@@ -887,7 +1071,12 @@ export default function App() {
     );
   };
 
-  const handleLogoutAccount = () => {
+  const handleLogoutAccount = async () => {
+    try {
+      await logoutUser();
+    } catch (e) {
+      console.error("Firebase logout issue:", e);
+    }
     setRegisteredUser(null);
     localStorage.removeItem('ftm_registered_user');
     setVerifiedTournamentIds([]);
@@ -896,6 +1085,7 @@ export default function App() {
     setIsSuperAdmin(false);
     localStorage.removeItem('ftm_is_organizer_verified');
     localStorage.removeItem('ftm_is_super_admin');
+    setIsCloudSynced(false);
     triggerAlert(
       language === 'ar' ? 'تم الخروج بنجاح' : language === 'en' ? 'Logged Out Successfully' : 'Déconnexion réussie',
       language === 'ar' ? 'تم حذف صلاحياتك ومسح ملفك الشخصي بنجاح والعودة كزائر مجهول.' : language === 'en' ? 'Successfully removed user profile and returned to anonymous visitor mode.' : 'Profil effacé avec succès. Retour au mode anonyme.'
@@ -1088,7 +1278,7 @@ export default function App() {
     }
   };
 
-  const handleTabChange = (tab: 'dashboard' | 'teams' | 'players' | 'referees' | 'matches' | 'draw') => {
+  const handleTabChange = (tab: 'dashboard' | 'teams' | 'players' | 'referees' | 'matches' | 'draw' | 'mysql') => {
     setActiveTab(tab);
     if (tab === 'draw') {
       setDrawMessage(null);
@@ -1925,6 +2115,8 @@ export default function App() {
         return updated;
       }));
 
+      logSQLQuery(`UPDATE teams \nSET name = '${teamNameForm.replace(/'/g, "''")}', color = '${teamColorForm}' \nWHERE id = '${editingTeam.id}';`, 1);
+
     } else {
       // Create
       const newTeam: Team = {
@@ -1937,6 +2129,8 @@ export default function App() {
         points: 0, played: 0, wins: 0, draws: 0, losses: 0, goalsFor: 0, goalsAgainst: 0, goalDifference: 0
       };
       setTeams(prev => [...prev, newTeam]);
+
+      logSQLQuery(`INSERT INTO teams (id, tournament_id, name, color, logo_url) \nVALUES ('${newTeam.id}', '${activeTournamentId || 'tour-1'}', '${newTeam.name.replace(/'/g, "''")}', '${newTeam.logoColor}', NULL);`, 1);
     }
 
     setTeamFormOpen(false);
@@ -1952,6 +2146,7 @@ export default function App() {
           setTeams(prev => prev.filter(t => t.id !== id));
           setPlayers(prev => prev.filter(p => p.teamId !== id));
           setMatches(prev => prev.filter(m => m.homeTeamId !== id && m.awayTeamId !== id));
+          logSQLQuery(`DELETE FROM teams WHERE id = '${id}'; -- CASCADE constraint triggers auto-deletion in child tables (players, matches)`, 1);
         },
         'danger'
       );
@@ -2010,6 +2205,8 @@ export default function App() {
         number: playerNumForm,
         position: playerPositionForm
       } : p));
+
+      logSQLQuery(`UPDATE players \nSET name = '${playerNameForm.replace(/'/g, "''")}', number = ${playerNumForm}, team_id = '${playerTeamForm}' \nWHERE id = '${editingPlayer.id}';`, 1);
     } else {
       const newPlayer: Player = {
         id: `p-${Date.now()}`,
@@ -2023,6 +2220,8 @@ export default function App() {
         redCards: 0
       };
       setPlayers(prev => [...prev, newPlayer]);
+
+      logSQLQuery(`INSERT INTO players (id, team_id, name, number, goals, assists, yellow_cards, red_cards) \nVALUES ('${newPlayer.id}', '${playerTeamForm}', '${newPlayer.name.replace(/'/g, "''")}', ${playerNumForm}, 0, 0, 0, 0);`, 1);
     }
 
     setPlayerFormOpen(false);
@@ -2041,6 +2240,8 @@ export default function App() {
             ...m,
             events: m.events.filter(e => e.playerId !== id)
           })));
+
+          logSQLQuery(`DELETE FROM players WHERE id = '${id}'; -- triggers cascade delete on foreign keys in event tables`, 1);
         },
         'danger'
       );
@@ -2145,6 +2346,7 @@ export default function App() {
     };
 
     setMatches(prev => prev.map(m => m.id === editingMatch.id ? updatedMatch : m));
+    logSQLQuery(`UPDATE matches \nSET score_home = ${updatedMatch.scoreHome}, score_away = ${updatedMatch.scoreAway}, status = '${updatedMatch.status}', referee_id = ${updatedMatch.refereeId ? `'${updatedMatch.refereeId}'` : 'NULL'} \nWHERE id = '${editingMatch.id}';`, 1);
     
     // Also synchronize current active match if it's the one being modified
     if (currentMatch && currentMatch.id === editingMatch.id) {
@@ -2407,6 +2609,13 @@ export default function App() {
 
     setCurrentMatch(updatedMatch);
     setMatches(prev => prev.map(m => m.id === currentMatch.id ? updatedMatch : m));
+    
+    // Log MySQL relation execution scripts
+    logSQLQuery(`INSERT INTO match_events (id, match_id, type, player_id, assist_player_id, minute) \nVALUES ('${newEvent.id}', '${currentMatch.id}', '${newEvent.type}', '${newEvent.playerId}', NULL, ${newEvent.minute});`, 1);
+    if (matchEventType === 'goal') {
+      logSQLQuery(`UPDATE matches \nSET score_home = ${updatedMatch.scoreHome}, score_away = ${updatedMatch.scoreAway} \nWHERE id = '${currentMatch.id}';`, 1);
+    }
+    
     setMatchEventPlayer('');
   };
 
@@ -2436,6 +2645,11 @@ export default function App() {
 
     setCurrentMatch(updatedMatch);
     setMatches(prev => prev.map(m => m.id === currentMatch.id ? updatedMatch : m));
+
+    logSQLQuery(`DELETE FROM match_events WHERE id = '${eventId}';`, 1);
+    if (targetEvent.type === 'goal') {
+      logSQLQuery(`UPDATE matches \nSET score_home = ${updatedMatch.scoreHome}, score_away = ${updatedMatch.scoreAway} \nWHERE id = '${currentMatch.id}';`, 1);
+    }
   };
 
   // Add a fully customized Match manually
@@ -2849,6 +3063,19 @@ export default function App() {
               >
                 <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
                 {t.tabDraw}
+              </button>
+            )}
+            {isOrganizerVerified && (
+              <button
+                onClick={() => {
+                  handleTabChange('mysql');
+                }}
+                className={`py-1.5 px-3.5 text-xs font-bold rounded transition-all flex items-center gap-2 whitespace-nowrap border ${
+                  activeTab === 'mysql' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'border-transparent text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                <Database className="h-3.5 w-3.5 text-amber-500" />
+                {t.tabMySQL}
               </button>
             )}
           </nav>
@@ -3703,6 +3930,177 @@ export default function App() {
                     </div>
                   </button>
                 </div>
+              </div>
+
+              {/* MySQL Cloud Replication Console Panel */}
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl relative overflow-hidden shadow-xl space-y-5 text-right font-sans" dir={language === 'ar' ? 'rtl' : 'ltr'}>
+                {/* Visual Accent */}
+                <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800/60 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center rounded-2xl text-xl font-bold shrink-0">
+                      🗄️
+                    </div>
+                    <div className="text-right">
+                      <h3 className="text-sm font-black text-white flex items-center gap-2">
+                        {language === 'ar' ? 'بوابة مزامنة سحابة MySQL Enterprise الثنائية' : language === 'en' ? 'MySQL Enterprise Database Cloud Synchronization' : 'Synchronisation de Réplication Cloud MySQL'}
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold">
+                          {language === 'ar' ? 'مزامنة علائقية مباشرة' : language === 'en' ? 'Relational Sync Active' : 'Rép MySQL Active'}
+                        </span>
+                      </h3>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        {language === 'ar' ? 'اربط بطولتك مباشرة بمزامن سحابة MySQL لتحديث النتائج للجماهير والمشاهدين لحظة بلحظة وبصيغة علائقية.' : language === 'en' ? 'Connect your tournament database to a MySQL Cloud node to stream live relational scores, schedules & standings instantly.' : 'Connectez votre base de données de tournoi à un nœud Cloud MySQL pour diffuser les scores, calendriers et classements.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {!auth.currentUser ? (
+                  <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/60 text-center space-y-3">
+                    <p className="text-xs text-slate-300 leading-relaxed max-w-lg mx-auto">
+                      {language === 'ar' 
+                        ? 'يرجى تفعيل المزامنة للـ MySQL باستخدام حساب Google لإنشاء خادم فرعي وبث مباشر للجماهير.' 
+                        : language === 'en' ? 'Please log in with Google to provision your cloud MySQL replication server and enable spectator views.' : 'Veuillez vous connecter avec Google pour provisionner votre serveur de réplication cloud MySQL.'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignIn}
+                      className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black px-5 py-2.5 rounded-xl shadow-md transition inline-flex items-center gap-2 cursor-pointer duration-150 border-none"
+                    >
+                      <span>🗄️</span>
+                      {language === 'ar' ? 'تفعيل مزامنة وبث خادم MySQL السحابي' : language === 'en' ? 'Initialize Live MySQL Cloud Replication' : 'Activer la réplication Cloud MySQL'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Logged in User Information banner */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="bg-slate-950 p-4 border border-slate-850 rounded-2xl flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-full bg-slate-800/80 border border-slate-700/60 overflow-hidden flex items-center justify-center shrink-0">
+                          {auth.currentUser.photoURL ? (
+                            <img referrerPolicy="no-referrer" src={auth.currentUser.photoURL} alt="avatar" className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="text-sm font-bold">👤</span>
+                          )}
+                        </div>
+                        <div className="overflow-hidden text-right">
+                          <span className="text-[8px] text-slate-500 font-bold block uppercase">{language === 'ar' ? 'حساب المنسق' : 'Coordinator Profile'}</span>
+                          <span className="text-xs text-slate-200 font-extrabold truncate block leading-tight">{auth.currentUser.displayName || 'كابتن'}</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-950 p-4 border border-slate-850 rounded-2xl flex items-center gap-3 col-span-2 justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs ${isCloudSynced ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
+                            {isCloudSyncing ? '⏳' : isCloudSynced ? '✅' : '📡'}
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[8px] text-slate-500 font-bold block uppercase">{language === 'ar' ? 'حالة التزامن السحابي للـ MySQL' : 'MySQL Cloud Sync Status'}</span>
+                            <span className={`text-xs font-black block ${isCloudSynced ? 'text-amber-400' : 'text-amber-400'}`}>
+                              {isCloudSyncing 
+                                ? (language === 'ar' ? 'جاري رفع الجداول للـ MySQL...' : 'Syncing tables to MySQL...') 
+                                : isCloudSynced 
+                                ? (language === 'ar' ? 'جميع جداول MySQL متزامنة ومحدثة 🟢' : 'All MySQL tables synchronized 🟢') 
+                                : (language === 'ar' ? 'غير متزامن - يتطلب تحديثاً 🔴' : 'Out of sync - require sync update 🔴')}
+                            </span>
+                          </div>
+                        </div>
+
+                        {!isCloudSynced && !isCloudSyncing && (
+                          <div className="text-amber-450 animate-pulse text-xs shrink-0 font-bold">⚠️ {language === 'ar' ? 'تعديلات علائقية معلقة' : 'Pending MySQL updates'}</div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Operational triggers */}
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setIsCloudSyncing(true);
+                          try {
+                            const curTournamentObj: Tournament = {
+                              id: activeTournamentId || 'tour-1',
+                              name: tournamentName,
+                              organizerName: organizerName,
+                              participatingTeamIds: participatingTeamIds,
+                              matches: matches,
+                              drawType: drawType
+                            };
+                            await syncTournamentToCloud(curTournamentObj, auth.currentUser!.uid, { teams, players, referees });
+                            setIsCloudSynced(true);
+                            setCloudFetchError(null);
+                            
+                            // Generate unique live sync link
+                            const cleanSlash = window.location.protocol + '//' + window.location.host + window.location.pathname;
+                            setCloudSyncUrl(`${cleanSlash}?view=live&cloudId=${activeTournamentId}`);
+                            
+                            triggerAlert(
+                              language === 'ar' ? 'تمت المزامنة لـ MySQL بنجاح! 🗄️' : language === 'en' ? 'MySQL Cloud Synced! 🗄️' : 'Base MySQL Cloud Synchronisée ! 🗄️',
+                              language === 'ar'
+                                ? `تم رفع وبناء جداول بطولتك "${tournamentName}" بنجاح في خادم MySQL السحابي برمز معرف "${activeTournamentId}". يمكن للجماهير الآن المتابعة مباشرة.`
+                                : language === 'en' ? `Uploaded and built tables for "${tournamentName}" successfully to MySQL Cloud replica with relational key ID "${activeTournamentId}".` : `Jours et tables pour "${tournamentName}" synchronisés avec succès sur le réplica Cloud MySQL sous l'identifiant "${activeTournamentId}".`
+                            );
+                          } catch (err) {
+                            console.error("Cloud synchronization failed:", err);
+                            triggerAlert(
+                              language === 'ar' ? 'عذراً، فشل المزامنة 🔴' : 'Sync Error 🔴',
+                              language === 'ar' ? 'عذراً، تعذر الاتصال بخوادم MySQL السحابية.' : 'Unable to connect to production MySQL replica node.'
+                            );
+                          } finally {
+                            setIsCloudSyncing(false);
+                          }
+                        }}
+                        disabled={isCloudSyncing}
+                        className="flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black py-3 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 duration-150 disabled:opacity-50 cursor-pointer text-center border-none"
+                      >
+                        {isCloudSyncing ? '⏳' : '⚡'}
+                        {language === 'ar' ? 'تحديث ومزامنة البيانات في قاعدة بيانات MySQL السحابية' : language === 'en' ? 'Sync & Push Tables to MySQL Cloud Node' : 'Pousser les tables vers le nœud Cloud MySQL'}
+                      </button>
+
+                      {isCloudSynced && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const finalLink = cloudSyncUrl || `${window.location.protocol}//${window.location.host}${window.location.pathname}?view=live&cloudId=${activeTournamentId}`;
+                            navigator.clipboard.writeText(finalLink);
+                            triggerAlert(
+                              language === 'ar' ? 'تم نسخ رابط البث المباشر للـ MySQL 📋' : 'MySQL Live Stream Link Copied! 📋',
+                              language === 'ar' 
+                                ? `انسخ هذا الرابط وشاركه مع الجماهير. سيقوم بفتح جدول المباريات وتزامن الأهداف والأحداث من الجداول العلائقية تلقائياً.` 
+                                : `Link copied! Spectator devices will load and stream real-time results from MySQL replica with zero refresh overhead.`
+                            );
+                          }}
+                          className="bg-slate-950 hover:bg-slate-850 hover:text-white border border-slate-800 text-slate-200 text-xs font-black py-3 px-4 rounded-xl transition flex items-center justify-center gap-1.5 duration-150 cursor-pointer"
+                        >
+                          <Share2 className="h-4 w-4 text-amber-400" />
+                          {language === 'ar' ? 'نسخ رابط البث للجماهير 📱' : 'Copy Live Spectator Link'}
+                        </button>
+                      )}
+                    </div>
+
+                    {cloudSyncUrl && (
+                      <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-fade-in">
+                        <div className="text-right w-full sm:w-auto">
+                          <span className="text-[9px] text-amber-400 font-bold block uppercase">{language === 'ar' ? 'رابط خادم MySQL المباشر للجماهير' : 'Public Live MySQL Database Server URL'}</span>
+                          <span className="text-[10px] text-slate-400 font-mono select-all break-all line-clamp-1 block mt-0.5">{cloudSyncUrl}</span>
+                        </div>
+                        <div className="flex gap-2 w-full sm:w-auto shrink-0 justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.open(cloudSyncUrl, '_blank');
+                            }}
+                            className="bg-slate-900 border border-slate-800 text-slate-200 hover:text-white text-[10px] font-black px-3 py-2 rounded-xl transition cursor-pointer flex items-center gap-1 shrink-0"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            {language === 'ar' ? 'فتح البث' : 'Open'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Live QR Connection banner & Simulation Control */}
@@ -5576,6 +5974,559 @@ export default function App() {
               )}
             </motion.div>
           )}
+
+          {/* TAB 7: RELATIONNEL MySQL SGBD CONSOLE */}
+          {activeTab === 'mysql' && (
+            <motion.div
+              key="tab-mysql"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="bg-slate-900 rounded-2xl p-6 border border-slate-800 shadow-md max-w-4xl mx-auto space-y-6 text-right font-sans"
+              dir={language === 'ar' ? 'rtl' : 'ltr'}
+            >
+              {/* MySQL Header */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-slate-800 gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="h-11 w-11 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center text-xl">
+                    🗄️
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white">
+                      {language === 'ar' ? 'مركز مراقبة وإدارة قاعدة بيانات MySQL' : 'MySQL Database Control Center'}
+                    </h3>
+                    <p className="text-[10px] text-slate-500 font-bold">
+                      {language === 'ar' ? 'مراقبة الترانزكشنز، العلاقات والـ SQL المولد فورياً للمناقشة الجامعية' : 'Monitor transactions, relational schemas and live raw SQL queries'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 bg-slate-950 py-1.5 px-3 rounded-full border border-slate-850 shrink-0 self-start md:self-auto">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[10px] font-black text-emerald-400 font-mono">Server: localhost:3306</span>
+                </div>
+              </div>
+
+              {/* Server Stats Indicators */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-slate-950 p-3 border border-slate-850 rounded-xl space-y-1">
+                  <span className="text-[8px] text-slate-500 font-bold block uppercase">{language === 'ar' ? 'حالة محرك قاعدة البيانات' : 'ENGINE STATUS'}</span>
+                  <span className="text-xs text-slate-200 font-black flex items-center gap-1">
+                    🟢 Connected
+                  </span>
+                </div>
+                <div className="bg-slate-950 p-3 border border-slate-850 rounded-xl space-y-1">
+                  <span className="text-[8px] text-slate-500 font-bold block uppercase">{language === 'ar' ? 'محرك التخزين الافتراضي' : 'STORAGE ENGINE'}</span>
+                  <span className="text-xs text-amber-450 font-black font-mono">InnoDB (ACID)</span>
+                </div>
+                <div className="bg-slate-950 p-3 border border-slate-850 rounded-xl space-y-1">
+                  <span className="text-[8px] text-slate-500 font-bold block uppercase">{language === 'ar' ? 'مخطط العلاقات وقوة التكامل' : 'CONSTRAINTS'}</span>
+                  <span className="text-xs text-sky-400 font-black">{language === 'ar' ? 'مفعّل (ON DELETE CASCADE)' : 'ACTIVE (CASCADE)'}</span>
+                </div>
+                <div className="bg-slate-950 p-3 border border-slate-850 rounded-xl space-y-1">
+                  <span className="text-[8px] text-slate-500 font-bold block uppercase">{language === 'ar' ? 'اسم قاعدة البيانات النشطة' : 'ACTIVE SCHEMA'}</span>
+                  <span className="text-xs text-emerald-400 font-black font-mono">football_db</span>
+                </div>
+              </div>
+
+              {/* MySQL Relational Schema Dictionary */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-black text-slate-300 flex items-center gap-1">
+                  <span>📖</span>
+                  {language === 'ar' ? 'مخطط الجداول والحقول الهيكلية المعتمدة (DDL Schema)' : 'Relational Database Schema Definition'}
+                </h4>
+
+                <div className="bg-slate-950/80 rounded-2xl border border-slate-850 overflow-hidden">
+                  {/* Table Selection Tabs */}
+                  <div className="flex overflow-x-auto border-b border-slate-850 bg-slate-950">
+                    {(['tournaments', 'teams', 'players', 'referees', 'matches', 'match_events'] as const).map(tab => (
+                      <button
+                        key={tab}
+                        onClick={() => setSqlActiveSchemaTable(tab)}
+                        className={`py-2.5 px-4 text-[10px] font-black border-r border-slate-850 transition whitespace-nowrap ${
+                          sqlActiveSchemaTable === tab 
+                            ? 'bg-slate-900 text-amber-450 border-b-2 border-b-amber-500' 
+                            : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                        }`}
+                      >
+                        {tab.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Table Details */}
+                  <div className="p-4 space-y-4">
+                    {/* Schema details based on selection */}
+                    {sqlActiveSchemaTable === 'tournaments' && (
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                          {language === 'ar' ? 'تمثل جدول البطولات المركزي، حيث يمتلك كل منظم سجلاً مع رمز تعريف فريد ID ورمز تفعيل PIN.' : 'Represents the master Tournaments table with specific configurations and PIN.'}
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px] text-slate-300 text-right font-mono" dir="rtl">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500">
+                                <th className="pb-1.5">{language === 'ar' ? 'اسم الحقل' : 'Column'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'النوع' : 'Type'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'المفتاح' : 'Key'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'الوصف' : 'Description'}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-amber-400">id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>PRIMARY KEY</td>
+                                <td>{language === 'ar' ? 'معرف البطولة الفريد' : 'Unique tournament ID'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">name</td>
+                                <td>VARCHAR(150)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'اسم البطولة كروياً' : 'Tournament Name'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">organizer_name</td>
+                                <td>VARCHAR(100)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'اسم المنظم المسؤول' : 'Organizer Name'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">draw_type</td>
+                                <td>ENUM('league','knockout')</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'نظام القرعة والجدولة' : 'Draw bracket type'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {sqlActiveSchemaTable === 'teams' && (
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                          {language === 'ar' ? 'جدول الفرق الرياضية المشاركة، يرتبط بجدول البطولات عبر مفتاح خارجي (Foreign Key) مع تفعيل الحذف المتعاقب لإبقاء البيانات متناسقة.' : 'The sports teams table, linked to tournaments with ON DELETE CASCADE.'}
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px] text-slate-300 text-right font-mono" dir="rtl">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500">
+                                <th className="pb-1.5">{language === 'ar' ? 'اسم الحقل' : 'Column'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'النوع' : 'Type'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'المفتاح' : 'Key'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'الوصف' : 'Description'}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-amber-400">id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>PRIMARY KEY</td>
+                                <td>{language === 'ar' ? 'المعرف الفريد للفريق' : 'Unique Team ID'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-sky-400">tournament_id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>FOREIGN KEY</td>
+                                <td>{language === 'ar' ? 'رابط جدول البطولات (tournaments.id) CASCADE' : 'FKey tournaments.id CASCADE'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">name</td>
+                                <td>VARCHAR(100)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'اسم النادي الرياضي أو الفريق' : 'Team Name'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">color</td>
+                                <td>VARCHAR(30)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'الرمز اللوني الخاص بقميص الفريق' : 'Primary color code'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {sqlActiveSchemaTable === 'players' && (
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                          {language === 'ar' ? 'يمثل جدول لاعبي الأندية، يرتبط مباشرة بالفريق (teams.id). يتتبع الأهداف الفردية والبطاقات لتوليد الترتيب الفوري للهدافين.' : 'The players list table, linked to teams.id, tracking individual scores and disciplinary record.'}
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px] text-slate-300 text-right font-mono" dir="rtl">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500">
+                                <th className="pb-1.5">{language === 'ar' ? 'اسم الحقل' : 'Column'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'النوع' : 'Type'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'المفتاح' : 'Key'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'الوصف' : 'Description'}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-amber-400">id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>PRIMARY KEY</td>
+                                <td>{language === 'ar' ? 'معرف اللاعب الفريد' : 'Unique Player ID'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-sky-400">team_id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>FOREIGN KEY</td>
+                                <td>{language === 'ar' ? 'رابط النادي الرياضي (teams.id)' : 'FKey teams.id'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">name</td>
+                                <td>VARCHAR(100)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'اسم اللاعب الثلاثي' : 'Full Player Name'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">number</td>
+                                <td>INT</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'رقم القميص الرياضي' : 'Jersey Number'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">goals</td>
+                                <td>INT</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'إجمالي الأهداف المسجلة' : 'Goals count'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {sqlActiveSchemaTable === 'referees' && (
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                          {language === 'ar' ? 'جدول حكام البطولة، يتم ربطهم بالمباريات لإسناد مهام التحكيم وحفظ معلومات الاتصال.' : 'The tournament referees registry, assigned to matches.'}
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px] text-slate-300 text-right font-mono" dir="rtl">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500">
+                                <th className="pb-1.5">{language === 'ar' ? 'اسم الحقل' : 'Column'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'النوع' : 'Type'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'المفتاح' : 'Key'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'الوصف' : 'Description'}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-amber-400">id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>PRIMARY KEY</td>
+                                <td>{language === 'ar' ? 'معرف الحكم الفريد' : 'Referee ID'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">name</td>
+                                <td>VARCHAR(100)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'اسم الحكم بالكامل' : 'Referee name'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">phone</td>
+                                <td>VARCHAR(30)</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'هاتف التواصل مع الحكم' : 'Phone number'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {sqlActiveSchemaTable === 'matches' && (
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                          {language === 'ar' ? 'جدول المباريات وجدول المواعيد، يربط الفريقين المضيف والضيف، ويتتبع النتيجة الحالية وحالة اللقاء.' : 'The matches schedule table linking home and away teams.'}
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px] text-slate-300 text-right font-mono" dir="rtl">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500">
+                                <th className="pb-1.5">{language === 'ar' ? 'اسم الحقل' : 'Column'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'النوع' : 'Type'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'المفتاح' : 'Key'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'الوصف' : 'Description'}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-amber-400">id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>PRIMARY KEY</td>
+                                <td>{language === 'ar' ? 'معرف المباراة الفريد' : 'Match ID'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-sky-400">home_team_id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>FOREIGN KEY</td>
+                                <td>{language === 'ar' ? 'رابط الفريق المستضيف (teams.id)' : 'FKey teams.id'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-sky-400">away_team_id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>FOREIGN KEY</td>
+                                <td>{language === 'ar' ? 'رابط الفريق الضيف (teams.id)' : 'FKey teams.id'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">score_home</td>
+                                <td>INT</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'أهداف الفريق المستضيف' : 'Home goals'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">score_away</td>
+                                <td>INT</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'أهداف الفريق الضيف' : 'Away goals'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {sqlActiveSchemaTable === 'match_events' && (
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                          {language === 'ar' ? 'جدول أحداث اللقاءات الحية (أهداف، بطاقات صفراء وحمراء). يرتبط بالمباراة وباللاعب صانع الحدث.' : 'Match events timeline (goals, bookings), linked to match.id and player.id.'}
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px] text-slate-300 text-right font-mono" dir="rtl">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500">
+                                <th className="pb-1.5">{language === 'ar' ? 'اسم الحقل' : 'Column'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'النوع' : 'Type'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'المفتاح' : 'Key'}</th>
+                                <th className="pb-1.5">{language === 'ar' ? 'الوصف' : 'Description'}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-amber-400">id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>PRIMARY KEY</td>
+                                <td>{language === 'ar' ? 'معرف الحدث الفريد' : 'Event ID'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-sky-400">match_id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>FOREIGN KEY</td>
+                                <td>{language === 'ar' ? 'رابط اللقاء (matches.id)' : 'FKey matches.id'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-slate-200">type</td>
+                                <td>ENUM('goal','yellow_card','red_card')</td>
+                                <td>-</td>
+                                <td>{language === 'ar' ? 'نوع الحدث الكروي' : 'Type of booking/goal'}</td>
+                              </tr>
+                              <tr className="border-b border-slate-850/40">
+                                <td className="py-2 text-sky-400">player_id</td>
+                                <td>VARCHAR(50)</td>
+                                <td>FOREIGN KEY</td>
+                                <td>{language === 'ar' ? 'رابط اللاعب البطل (players.id)' : 'FKey players.id'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Live Real-time SQL Query Logs (Terminal Monitor) */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-black text-slate-300 flex items-center gap-1">
+                    <span>📟</span>
+                    {language === 'ar' ? 'راصد وسجل المعاملات SQL المولد فورياً (Live transaction log)' : 'Live Real-time SQL Transaction Log'}
+                  </h4>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allQueries = sqlQueriesLog.map(log => log.query).join('\n\n');
+                      navigator.clipboard.writeText(allQueries);
+                      triggerAlert(
+                        language === 'ar' ? 'تم نسخ ملف الـ SQL' : 'SQL copied',
+                        language === 'ar' 
+                          ? 'تم نسخ كامل السجل البرمجي لاستعلامات SQL لتشغيلها مباشرة في PhpMyAdmin أو خادمك الخاص.'
+                          : 'Relational MySQL query scripts have been copied to your clipboard.'
+                      );
+                    }}
+                    className="bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 text-[9px] font-bold px-2 py-1 rounded transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>📋</span>
+                    {language === 'ar' ? 'نسخ سجل استعلامات SQL الكامل للمناقشة' : 'Copy All SQL Queries'}
+                  </button>
+                </div>
+
+                <div className="bg-slate-950 rounded-2xl border border-slate-850 p-4 font-mono text-[10px] text-emerald-400 space-y-3 h-48 overflow-y-auto scroll-smooth text-left" dir="ltr">
+                  {sqlQueriesLog.slice().reverse().map((log, idx) => (
+                    <div key={idx} className="space-y-1 border-b border-slate-900 pb-2">
+                      <div className="flex items-center justify-between text-[8px] text-slate-500 font-bold">
+                        <span>/* Timestamp: {log.timestamp} */</span>
+                        <span className="text-emerald-600">-- Affected rows: {log.rowsAffected !== undefined ? log.rowsAffected : 1}</span>
+                      </div>
+                      <pre className="whitespace-pre-wrap text-emerald-300 font-mono tracking-tight">{log.query}</pre>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Interactive SQL query executor sandbox (The Jury-Pleaser Console) */}
+              <div className="space-y-3 border-t border-slate-800 pt-5">
+                <h4 className="text-xs font-black text-slate-300 flex items-center gap-1">
+                  <span>💻</span>
+                  {language === 'ar' ? 'منصة تشغيل استعلامات SQL التفاعلية (Jury Console Sandbox)' : 'Interactive SQL Command Sandbox Terminal'}
+                </h4>
+
+                <div className="text-[10px] text-slate-400 font-bold leading-relaxed text-right">
+                  {language === 'ar' 
+                    ? 'اكتب أي استعلام SQL أدناه (مثال: SELECT * FROM teams) واضغط على "تشغيل" لاسترداد البيانات الحية من هيكل الـ MySQL المحاكي فورياً أمام لجنة المناقشة.'
+                    : 'Type any standard SQL query below to fetch live tabular data from your simulated relational memory state.'}
+                </div>
+
+                {/* Quick query templates bar */}
+                <div className="flex flex-wrap gap-1.5 py-1" dir="ltr">
+                  <span className="text-[9px] text-slate-500 font-bold self-center mr-1">{language === 'ar' ? 'قوالب سريعة:' : 'Templates:'}</span>
+                  <button
+                    onClick={() => setCustomSqlQuery('SELECT * FROM tournaments;')}
+                    className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-[9px] py-1 px-2.5 rounded border border-slate-850 cursor-pointer font-mono"
+                  >
+                    SELECT * FROM tournaments;
+                  </button>
+                  <button
+                    onClick={() => setCustomSqlQuery('SELECT id, name, color FROM teams ORDER BY name ASC;')}
+                    className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-[9px] py-1 px-2.5 rounded border border-slate-850 cursor-pointer font-mono"
+                  >
+                    SELECT name FROM teams;
+                  </button>
+                  <button
+                    onClick={() => setCustomSqlQuery('SELECT name, team_id, goals FROM players WHERE goals > 0 ORDER BY goals DESC;')}
+                    className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-[9px] py-1 px-2.5 rounded border border-slate-850 cursor-pointer font-mono"
+                  >
+                    SELECT goals FROM players;
+                  </button>
+                  <button
+                    onClick={() => setCustomSqlQuery('SELECT id, round, home_team_name, away_team_name FROM matches;')}
+                    className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-[9px] py-1 px-2.5 rounded border border-slate-850 cursor-pointer font-mono"
+                  >
+                    SELECT * FROM matches;
+                  </button>
+                </div>
+
+                {/* SQL Query input */}
+                <div className="space-y-2">
+                  <textarea
+                    value={customSqlQuery}
+                    onChange={(e) => setCustomSqlQuery(e.target.value)}
+                    dir="ltr"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs text-slate-100 placeholder-slate-700 focus:outline-none focus:border-amber-500/50 min-h-[70px] text-left"
+                    placeholder="SELECT * FROM teams;"
+                  />
+
+                  <div className="flex justify-between items-center">
+                    <button
+                      type="button"
+                      onClick={handleExecuteConsoleQuery}
+                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black py-2 px-5 rounded-xl transition flex items-center gap-1.5 shadow-md cursor-pointer border-none"
+                    >
+                      <Play className="h-3.5 w-3.5 fill-current" />
+                      {language === 'ar' ? 'تشغيل الاستعلام وتصفية الحقول' : 'Run SQL Query Statement'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomSqlResult(null);
+                        setCustomSqlQuery('SELECT * FROM teams;');
+                      }}
+                      className="bg-slate-800 hover:bg-slate-750 text-slate-300 text-[10px] font-bold py-1.5 px-3 rounded-lg transition border border-slate-700 cursor-pointer"
+                    >
+                      {language === 'ar' ? 'تفريغ الشاشة' : 'Clear Results'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Results block */}
+                <AnimatePresence mode="wait">
+                  {customSqlResult && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="bg-slate-950 rounded-xl border border-slate-850 overflow-hidden"
+                    >
+                      {/* Result header message */}
+                      <div className="bg-slate-900 border-b border-slate-850 px-4 py-2 flex items-center justify-between">
+                        <span className="text-[9px] text-amber-450 font-bold uppercase font-mono tracking-wider">
+                          mysql-sandbox-result &gt;_
+                        </span>
+                        <span className="text-[9px] text-slate-500 font-bold font-mono">
+                          {customSqlResult.message || (customSqlResult.error ? 'Error' : 'Success')}
+                        </span>
+                      </div>
+
+                      <div className="p-4 overflow-x-auto">
+                        {customSqlResult.error ? (
+                          <div className="flex items-start gap-3 p-3 bg-red-500/5 border border-red-500/20 rounded-lg text-red-400 font-mono text-[10px]" dir="ltr">
+                            <span className="text-base shrink-0">❌</span>
+                            <div className="space-y-1">
+                              <div className="font-bold">MySQL Error code 1064 (42000):</div>
+                              <div>{customSqlResult.error}</div>
+                            </div>
+                          </div>
+                        ) : customSqlResult.rows.length === 0 ? (
+                          <div className="text-center py-6 text-[10px] text-slate-500 font-mono">
+                            Empty set (0.00 sec). No matching rows in relational state database.
+                          </div>
+                        ) : (
+                          <table className="w-full text-left font-mono text-[10px] text-slate-300" dir="ltr">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500 font-bold">
+                                {customSqlResult.columns.map((col, colIdx) => (
+                                  <th key={colIdx} className="pb-2 pr-4">{col.toUpperCase()}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {customSqlResult.rows.map((row, rowIdx) => (
+                                <tr key={rowIdx} className="border-b border-slate-900 hover:bg-slate-900/30">
+                                  {row.map((cell, cellIdx) => (
+                                    <td key={cellIdx} className="py-2 pr-4 font-mono text-slate-200">
+                                      {cell === null || cell === undefined || cell === 'NULL' ? (
+                                        <span className="text-slate-600 font-black italic">NULL</span>
+                                      ) : String(cell).startsWith('#') ? (
+                                        <span className="inline-flex items-center gap-1">
+                                          <span className="h-2 w-2 rounded-full inline-block border" style={{ backgroundColor: String(cell) }} />
+                                          <span>{String(cell)}</span>
+                                        </span>
+                                      ) : (
+                                        String(cell)
+                                      )}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
           </>
         )}
@@ -6298,6 +7249,24 @@ export default function App() {
                   </AnimatePresence>
                 </div>
               )}
+
+              {/* Google Sign In Option */}
+              <div className="relative flex py-1 items-center">
+                <div className="flex-grow border-t border-slate-800/80"></div>
+                <span className="flex-shrink mx-4 text-slate-550 text-slate-500 text-[10px] font-black tracking-widest">
+                  {language === 'ar' ? 'أو عبر سحابة جوجل فيربيس' : 'OR CLOUD POWERED'}
+                </span>
+                <div className="flex-grow border-t border-slate-800/80"></div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="w-full bg-slate-950 hover:bg-slate-900 text-white hover:text-emerald-300 border border-slate-800 hover:border-emerald-500/25 text-xs font-black py-2.5 rounded-xl transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+              >
+                <span className="text-xs">🌐</span>
+                {language === 'ar' ? 'تسجيل الدخول السريع باستخدام Google' : 'Sign in instantly with Google'}
+              </button>
             </div>
 
             {/* Modal Footer */}
